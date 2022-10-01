@@ -17,14 +17,17 @@ parser = argparse.ArgumentParser(
 parser.add_argument('-nw', '--network', type=str,
                     help='Target network', default='')
 parser.add_argument('-t', '--timeout', type=int,
-                    help='ping timeout (seconds)', default=2)
+                    help='Ping timeout (seconds)', default=1)
+parser.add_argument('-s', '--slow',
+                    help='Straight output, no thread joining', action='store_true')
 parser.add_argument('-v', '--verbose',
-                    help='increase output verbosity', action='store_true')
+                    help='Increase output verbosity', action='store_true')
 args = parser.parse_args()
 hostsList = []
 threadsList = []
 validTarget = False
-MAX_HOST=254
+MAX_HOST = 254
+
 
 def promptNetworkInterfacesWindows():
     winCommand = 'ipconfig'
@@ -120,10 +123,15 @@ def getCommand():
 def pingTarget(target, command):
     if args.verbose == True:
         print('Pinging %s' % target)
-    response = subprocess.Popen(
-        command+' '+target, shell=True, stdout=subprocess.PIPE)
-    for line in response.stdout:
-        if (line.find(b'bytes from') != -1):
+
+    resp = subprocess.run(command+' '+target, shell=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    hostIsUp = resp.stdout.find(b'bytes from') != -1
+    if (args.slow == False):
+        if (hostIsUp == True):
+            print('%s host is UP' % (target))
+    else:
+        if (hostIsUp == True):
             hostsList.append(target)
     if args.verbose == True:
         print('%s finished' % target)
@@ -135,9 +143,9 @@ def createThreads(targetNetwork, command):
     for ip in range(MAX_HOST):
         ping = threading.Thread(target=pingTarget, args=(
             targetNetwork+'.'+str(ip+1), command), daemon=True)
-        threadsList.append(ping)
         ping.start()
-        ping.join()
+        if (args.slow == True):
+            ping.join()
 
 
 def performPingSweep(targetNetwork):
@@ -146,10 +154,11 @@ def performPingSweep(targetNetwork):
         startingTime = time.time()
         print('Starting ping sweep...')
         createThreads(targetNetwork, command)
-        getElapsedTime(startingTime)
-        print('Discovered IPs: ')
-        for h in hostsList:
-            print(h)
+        if (args.slow == True):
+            getElapsedTime(startingTime)
+            print('Discovered IPs: ')
+            for h in hostsList:
+                print(h)
     else:
         pass
     exit()
@@ -161,6 +170,9 @@ def getElapsedTime(startingTime):
 
 
 if __name__ == '__main__':
+    if (args.slow == True and args.timeout <= 1):
+        args.timeout = 3
+
     if (args.network == ''):
         print('No network defined!! A network will have to be selected from the system\'s Network Interfaces')
         promptNetworkInterfaces()
