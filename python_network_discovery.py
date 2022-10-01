@@ -1,13 +1,26 @@
 import argparse
+from asyncio import subprocess
 import os
 import platform
 import socket
+import threading
 import netifaces
+import signal
+import sys
+import concurrent.futures
+import time
+import subprocess
+
+signal.signal(signal.SIGINT, lambda x, y: sys.exit(0))
 parser = argparse.ArgumentParser(
     description='Network discovery tool that allows to know what ips are found in the specified network')
 parser.add_argument('-nw', '--network', type=str,
                     help='Target network', default='')
+parser.add_argument('-v', '--verbose',
+                    help='increase output verbosity', action='store_true')
 args = parser.parse_args()
+hostsList = []
+threadsList = []
 
 
 def promptNetworkInterfacesWindows():
@@ -19,51 +32,45 @@ def promptNetworkInterfacesLinux():
     linCommand = 'ifconfig'
     iFaces2Display = []
     nOption = 1
-    # ifaces=os.popen(linCommand)
-    # process response
     print('Displaying available interfaces')
-    # for line in ifaces.readlines():
-    #print('Line: %s' %(line))
-    # if(line.find('inet')!=-1):
-    # iFaces2Display.append({'option':nOption,'iFace':line})
-    # print(line)
     iFaces = socket.if_nameindex()
     print(iFaces)
 
 
 def getTargetNetwork(interface):
-    # Add MASK to determine true network address
-    return True
+
+    # For now it just returns the first three octets of the network interface ip
+    # ToDo: Add MASK to determine true network address
+    network = interface.split('.')
+    network.pop()
+    return network[0]+'.'+network[1]+'.'+network[2]
 
 
 def parseSelectedIface(response, ifaces):
     found = False
     i = 0
     selection = None
-    # while (found == False and i < len(ifaces)):
-    #    if (response == ifaces[i]['index'] or response==ifaces[i]['interface'] or response==ifaces[i]['addr']):
-    #        found == True
-    #        selection = i
-    #    else:
-    #        i += 1
-    print(i)
-    if (response == ifaces[i]['index'] or response == ifaces[i]['interface'] or response == ifaces[i]['addr']):
-        print('VALID')
+    while (found == False and i < len(ifaces)):
+        validValues = [str(ifaces[i]['index']), ifaces[i]
+                       ['interface'], ifaces[i]['addr']]
+        if (str(response) in validValues):
+            found = True
+            selection = i
+        else:
+            i += 1
 
     if (found == True):
-        print('Found i: %s' % selection)
-        return getTargetNetwork(selection)
+        return getTargetNetwork(ifaces[selection]['addr'])
     else:
-        print('I not found')
         return False
 
 
 def promptNetworkInterfaces():
     ifaces = []
     ifacesNames = netifaces.interfaces()
-    n = 0
     validTarget = False
     while (validTarget == False):
+        n = 0
         print('Available interfaces:')
         for i in ifacesNames:
             if (i != 'lo'):
@@ -75,36 +82,84 @@ def promptNetworkInterfaces():
         selectedIface = input('Select target network interface:')
         parsedTargetNetwork = parseSelectedIface(selectedIface, ifaces)
         if (parsedTargetNetwork != False):
-            selectedIfaceConfirm = input(
-                'Perform scan on network %s: yes | no' % (parsedTargetNetwork))
-            if (str(selectedIfaceConfirm).lower() == 'yes' or str(selectedIfaceConfirm).lower() == 'y'):
-                validTarget = True
-                performPing(parsedTargetNetwork)
+            validConfirmation = False
+            while (validConfirmation == False):
+                selectedIfaceConfirm = input(
+                    'Perform scan on network %s: yes | no: ' % (parsedTargetNetwork))
+                if (str(selectedIfaceConfirm).lower() == 'yes' or str(selectedIfaceConfirm).lower() == 'y' or selectedIfaceConfirm == ''):
+                    validTarget = True
+                    validConfirmation = True
+                    performPingSweep(parsedTargetNetwork)
+                elif (str(selectedIfaceConfirm).lower() != 'no' and str(selectedIfaceConfirm).lower() != 'n'):
+                    print('Please use y/yes or n/no to confirm the selection')
+                else:
+                    validConfirmation = True
         else:
             print('No valid target selected')
 
 
-def performPing(targetNetwork):
+def getCommand():
     print('Autodetecting current OS')
     osPlatform = platform.system()
     print('Detected OS: %s ' % (osPlatform))
     if (osPlatform.find('Windows') != -1):
-        promptNetworkInterfacesWindows()
-        # search for interfaces
+        command = 'ping -n 1 -W 2'
     elif (osPlatform.find('Linux') != -1):
-        promptNetworkInterfacesLinux()
+        command = 'ping -c 1 -W 2'
     else:
         print('No compatible OS detected')
+    return command or False
 
 
-def selectNetworkInterface():
-    promptNetworkInterfaces()
+def pingTarget(target, command):
+
+    if args.verbose == True:
+        print('Pinging %s' % target)
+
+    response = subprocess.Popen(
+        command+' '+target, shell=True, stdout=subprocess.PIPE)
+    for line in response.stdout:
+        if (line.find(b'bytes from') != -1):
+            hostsList.append(target)
+    if args.verbose == True:
+        print('%s finished' % target)
+
+
+def createThreads(targetNetwork, command):
+    # Currently just looking for the 254 hosts (mask 255.255.255.0 (/24))
+    # ToDo: calculate the real range of the number of hosts
+    for ip in range(254):
+        ping = threading.Thread(target=pingTarget(
+            targetNetwork+'.'+str(ip+1), command), daemon=True)
+        ping.start()
+        ping.join()
+
+
+def performPingSweep(targetNetwork):
+    command = getCommand()
+    if (command != False):
+        startingTime = time.time()
+        print('Starting ping sweep...')
+        createThreads(targetNetwork, command)
+        elapsedTime = time.time()-startingTime
+        print('Scanning finished, elapsed time: %s' % (elapsedTime))
+        print('Discovered IPs: ')
+        for h in hostsList:
+            print(h)
+    else:
+        pass
 
 
 if __name__ == '__main__':
     if (args.network == ''):
         print('No network defined!! A network will have to be selected from the system\'s Network Interfaces')
-        selectNetworkInterface()
+        promptNetworkInterfaces()
 
     else:
         print('Introduced network: %s' % (args.network))
+
+
+# with concurrent.futures.ThreadPoolExecutor(max_workers=254) as executor:
+        # for ip in range(254):
+        #   executor.submit(pingTarget(
+        #      targetNetwork+'.'+str(ip+1), command))#
