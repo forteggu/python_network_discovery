@@ -16,12 +16,15 @@ parser = argparse.ArgumentParser(
     description='Network discovery tool that allows to know what ips are found in the specified network')
 parser.add_argument('-nw', '--network', type=str,
                     help='Target network', default='')
+parser.add_argument('-t', '--timeout', type=int,
+                    help='ping timeout (seconds)', default=2)
 parser.add_argument('-v', '--verbose',
                     help='increase output verbosity', action='store_true')
 args = parser.parse_args()
 hostsList = []
 threadsList = []
-
+validTarget = False
+MAX_HOST=254
 
 def promptNetworkInterfacesWindows():
     winCommand = 'ipconfig'
@@ -65,10 +68,24 @@ def parseSelectedIface(response, ifaces):
         return False
 
 
+def promptConfirmation(parsedTargetNetwork):
+    validConfirmation = False
+    while (validConfirmation == False):
+        selectedIfaceConfirm = input(
+            'Perform scan on network %s: yes | no: ' % (parsedTargetNetwork))
+        if (str(selectedIfaceConfirm).lower() == 'yes' or str(selectedIfaceConfirm).lower() == 'y' or selectedIfaceConfirm == ''):
+            validTarget = True
+            validConfirmation = True
+            performPingSweep(parsedTargetNetwork)
+        elif (str(selectedIfaceConfirm).lower() != 'no' and str(selectedIfaceConfirm).lower() != 'n'):
+            print('Please use y/yes or n/no to confirm the selection')
+        else:
+            validConfirmation = True
+
+
 def promptNetworkInterfaces():
     ifaces = []
     ifacesNames = netifaces.interfaces()
-    validTarget = False
     while (validTarget == False):
         n = 0
         print('Available interfaces:')
@@ -82,18 +99,7 @@ def promptNetworkInterfaces():
         selectedIface = input('Select target network interface:')
         parsedTargetNetwork = parseSelectedIface(selectedIface, ifaces)
         if (parsedTargetNetwork != False):
-            validConfirmation = False
-            while (validConfirmation == False):
-                selectedIfaceConfirm = input(
-                    'Perform scan on network %s: yes | no: ' % (parsedTargetNetwork))
-                if (str(selectedIfaceConfirm).lower() == 'yes' or str(selectedIfaceConfirm).lower() == 'y' or selectedIfaceConfirm == ''):
-                    validTarget = True
-                    validConfirmation = True
-                    performPingSweep(parsedTargetNetwork)
-                elif (str(selectedIfaceConfirm).lower() != 'no' and str(selectedIfaceConfirm).lower() != 'n'):
-                    print('Please use y/yes or n/no to confirm the selection')
-                else:
-                    validConfirmation = True
+            promptConfirmation(parsedTargetNetwork)
         else:
             print('No valid target selected')
 
@@ -103,19 +109,17 @@ def getCommand():
     osPlatform = platform.system()
     print('Detected OS: %s ' % (osPlatform))
     if (osPlatform.find('Windows') != -1):
-        command = 'ping -n 1 -W 2'
+        command = 'ping -n 1 -W '+str(args.timeout)
     elif (osPlatform.find('Linux') != -1):
-        command = 'ping -c 1 -W 2'
+        command = 'ping -c 1 -W '+str(args.timeout)
     else:
         print('No compatible OS detected')
     return command or False
 
 
 def pingTarget(target, command):
-
     if args.verbose == True:
         print('Pinging %s' % target)
-
     response = subprocess.Popen(
         command+' '+target, shell=True, stdout=subprocess.PIPE)
     for line in response.stdout:
@@ -128,9 +132,10 @@ def pingTarget(target, command):
 def createThreads(targetNetwork, command):
     # Currently just looking for the 254 hosts (mask 255.255.255.0 (/24))
     # ToDo: calculate the real range of the number of hosts
-    for ip in range(254):
-        ping = threading.Thread(target=pingTarget(
+    for ip in range(MAX_HOST):
+        ping = threading.Thread(target=pingTarget, args=(
             targetNetwork+'.'+str(ip+1), command), daemon=True)
+        threadsList.append(ping)
         ping.start()
         ping.join()
 
@@ -141,13 +146,18 @@ def performPingSweep(targetNetwork):
         startingTime = time.time()
         print('Starting ping sweep...')
         createThreads(targetNetwork, command)
-        elapsedTime = time.time()-startingTime
-        print('Scanning finished, elapsed time: %s' % (elapsedTime))
+        getElapsedTime(startingTime)
         print('Discovered IPs: ')
         for h in hostsList:
             print(h)
     else:
         pass
+    exit()
+
+
+def getElapsedTime(startingTime):
+    elapsedTime = time.time()-startingTime
+    print('Scanning finished, elapsed time: %s' % (elapsedTime))
 
 
 if __name__ == '__main__':
@@ -157,9 +167,3 @@ if __name__ == '__main__':
 
     else:
         print('Introduced network: %s' % (args.network))
-
-
-# with concurrent.futures.ThreadPoolExecutor(max_workers=254) as executor:
-        # for ip in range(254):
-        #   executor.submit(pingTarget(
-        #      targetNetwork+'.'+str(ip+1), command))#
